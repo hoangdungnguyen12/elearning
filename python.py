@@ -11,37 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Ứng dụng Phân Tích Báo Cáo Tài Chính 📊")
-
-# --- Hàm khởi tạo Session Chat (Sử dụng state để giữ lịch sử chat) ---
-def get_chat_session(api_key, system_instruction, history=None):
-    """Khởi tạo hoặc trả về session chat hiện tại."""
-    if "chat_session" not in st.session_state or st.session_state.get('last_api_key') != api_key:
-        try:
-            client = genai.Client(api_key=api_key)
-            # Thiết lập Persona cho Gemini
-            config = genai.types.GenerateContentConfig(
-                system_instruction=system_instruction
-            )
-            
-            # Khởi tạo chat session mới
-            chat = client.chats.create(
-                model='gemini-2.5-flash',
-                config=config
-            )
-            if history:
-                 # Nếu có lịch sử, cố gắng thêm vào session (có thể cần xử lý phức tạp hơn)
-                 # Tạm thời chỉ khởi tạo mới.
-                 pass
-            
-            st.session_state['chat_session'] = chat
-            st.session_state['last_api_key'] = api_key # Lưu key để kiểm tra nếu key thay đổi
-            st.session_state['messages'] = [] # Reset lịch sử tin nhắn
-        except Exception as e:
-            st.error(f"Lỗi khởi tạo Chat Session: {e}")
-            return None
-            
-    return st.session_state['chat_session']
+st.title("Ứng dụng Phân Tích Báo Cáo Tài chính 📊")
 
 # --- Hàm tính toán chính (Sử dụng Caching để Tối ưu hiệu suất) ---
 @st.cache_data
@@ -64,7 +34,7 @@ def process_financial_data(df):
     tong_tai_san_row = df[df['Chỉ tiêu'].str.contains('TỔNG CỘNG TÀI SẢN', case=False, na=False)]
     
     if tong_tai_san_row.empty:
-        raise ValueError("Không tìm thấy chỉ tiêu 'TỔNG CỘNG TÀI SẢN'.")
+        raise ValueError("Không tìm thấy chỉ tiêu 'TỔNG CỘNG TÀI SỐN'.")
 
     tong_tai_san_N_1 = tong_tai_san_row['Năm trước'].iloc[0]
     tong_tai_san_N = tong_tai_san_row['Năm sau'].iloc[0]
@@ -83,47 +53,56 @@ def process_financial_data(df):
     
     return df
 
-# --- Hàm gọi API Gemini (Chung cho cả Phân tích và Chat) ---
-def generate_content(contents, api_key, system_instruction=None):
-    """Gửi nội dung đến Gemini API và nhận kết quả."""
+# --- Hàm gọi API Gemini ---
+def get_ai_analysis(data_for_ai, api_key, user_question=None):
+    """Gửi dữ liệu phân tích hoặc câu hỏi chat đến Gemini API và nhận nhận xét/trả lời."""
     try:
         client = genai.Client(api_key=api_key)
-        model_name = 'gemini-2.5-flash'
+        model_name = 'gemini-2.5-flash' 
         
-        config = None
-        if system_instruction:
-            config = genai.types.GenerateContentConfig(system_instruction=system_instruction)
+        # Xây dựng prompt dựa trên ngữ cảnh
+        if user_question:
+            # Prompt cho chế độ Chat
+            prompt = f"""
+            Bạn là một chuyên gia phân tích tài chính chuyên nghiệp và am hiểu về dữ liệu đã cung cấp.
+            Dữ liệu tài chính mà bạn cần tham khảo là:
+            {data_for_ai}
+            
+            Hãy trả lời câu hỏi sau của người dùng một cách chính xác, chuyên nghiệp và súc tích, dựa trên dữ liệu đã cho và kiến thức chuyên môn của bạn: "{user_question}"
+            """
+        else:
+            # Prompt gốc cho chế độ Phân tích
+            prompt = f"""
+            Bạn là một chuyên gia phân tích tài chính chuyên nghiệp. Dựa trên các chỉ số tài chính sau, hãy đưa ra một nhận xét khách quan, ngắn gọn (khoảng 3-4 đoạn) về tình hình tài chính của doanh nghiệp. Đánh giá tập trung vào tốc độ tăng trưởng, thay đổi cơ cấu tài sản và khả năng thanh toán hiện hành.
+            
+            Dữ liệu thô và chỉ số:
+            {data_for_ai}
+            """
 
         response = client.models.generate_content(
             model=model_name,
-            contents=contents,
-            config=config
+            contents=prompt
         )
         return response.text
 
     except APIError as e:
         return f"Lỗi gọi Gemini API: Vui lòng kiểm tra Khóa API hoặc giới hạn sử dụng. Chi tiết lỗi: {e}"
+    except KeyError:
+        return "Lỗi: Không tìm thấy Khóa API 'GEMINI_API_KEY'. Vui lòng kiểm tra cấu hình Secrets trên Streamlit Cloud."
     except Exception as e:
         return f"Đã xảy ra lỗi không xác định: {e}"
 
-# --- Logic chính của ứng dụng ---
-
-# Kiểm tra API Key (Sử dụng một lần ở đầu app)
-api_key_check = st.secrets.get("GEMINI_API_KEY") 
-if not api_key_check:
-    st.error("Lỗi: Không tìm thấy Khóa API. Vui lòng cấu hình Khóa 'GEMINI_API_KEY' trong Streamlit Secrets.")
+# --- Khởi tạo State cho Chat ---
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "data_for_ai_markdown" not in st.session_state:
+    st.session_state.data_for_ai_markdown = None
 
 # --- Chức năng 1: Tải File ---
 uploaded_file = st.file_uploader(
     "1. Tải file Excel Báo cáo Tài chính (Chỉ tiêu | Năm trước | Năm sau)",
     type=['xlsx', 'xls']
 )
-
-# Khởi tạo DataFrame trống
-df_processed = None
-data_for_ai = ""
-thanh_toan_hien_hanh_N = "N/A"
-thanh_toan_hien_hanh_N_1 = "N/A"
 
 if uploaded_file is not None:
     try:
@@ -151,48 +130,49 @@ if uploaded_file is not None:
             st.subheader("4. Các Chỉ số Tài chính Cơ bản")
             
             try:
-                # Lọc giá trị cho Chỉ số Thanh toán Hiện hành (Ví dụ)
-                tsnh_n = df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Năm sau'].iloc[0]
-                tsnh_n_1 = df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Năm trước'].iloc[0]
+                # Lọc giá trị cho Chỉ số Thanh toán Hiện hành
+                
+                # Lấy Tài sản ngắn hạn
+                tsnh_row = df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]
+                tsnh_n = tsnh_row['Năm sau'].iloc[0]
+                tsnh_n_1 = tsnh_row['Năm trước'].iloc[0]
 
-                no_ngan_han_N = df_processed[df_processed['Chỉ tiêu'].str.contains('NỢ NGẮN HẠN', case=False, na=False)]['Năm sau'].iloc[0]  
-                no_ngan_han_N_1 = df_processed[df_processed['Chỉ tiêu'].str.contains('NỢ NGẮN HẠN', case=False, na=False)]['Năm trước'].iloc[0]
+                # Lấy Nợ ngắn hạn
+                no_ngan_han_row = df_processed[df_processed['Chỉ tiêu'].str.contains('NỢ NGẮN HẠN', case=False, na=False)]
+                no_ngan_han_N = no_ngan_han_row['Năm sau'].iloc[0]  
+                no_ngan_han_N_1 = no_ngan_han_row['Năm trước'].iloc[0]
+
+                # Xử lý chia cho 0 cho chỉ số
+                no_ngan_han_N_safe = no_ngan_han_N if no_ngan_han_N != 0 else 1e-9
+                no_ngan_han_N_1_safe = no_ngan_han_N_1 if no_ngan_han_N_1 != 0 else 1e-9
                 
-                # Kiểm tra chia cho 0 trước khi tính toán
-                if no_ngan_han_N != 0:
-                    thanh_toan_hien_hanh_N = tsnh_n / no_ngan_han_N
-                else:
-                    thanh_toan_hien_hanh_N = float('inf') # Vô cực nếu nợ = 0
-                
-                if no_ngan_han_N_1 != 0:
-                    thanh_toan_hien_hanh_N_1 = tsnh_n_1 / no_ngan_han_N_1
-                else:
-                    thanh_toan_hien_hanh_N_1 = float('inf')
+                # Tính toán
+                thanh_toan_hien_hanh_N = tsnh_n / no_ngan_han_N_safe
+                thanh_toan_hien_hanh_N_1 = tsnh_n_1 / no_ngan_han_N_1_safe
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     st.metric(
                         label="Chỉ số Thanh toán Hiện hành (Năm trước)",
-                        value=f"{thanh_toan_hien_hanh_N_1:.2f} lần" if thanh_toan_hien_hanh_N_1 != float('inf') else "Vô cực"
+                        value=f"{thanh_toan_hien_hanh_N_1:.2f} lần"
                     )
                 with col2:
                     st.metric(
                         label="Chỉ số Thanh toán Hiện hành (Năm sau)",
-                        value=f"{thanh_toan_hien_hanh_N:.2f} lần" if thanh_toan_hien_hanh_N != float('inf') else "Vô cực",
-                        delta=f"{thanh_toan_hien_hanh_N - thanh_toan_hien_hanh_N_1:.2f}" if thanh_toan_hien_hanh_N != float('inf') and thanh_toan_hien_hanh_N_1 != float('inf') else "N/A"
+                        value=f"{thanh_toan_hien_hanh_N:.2f} lần",
+                        delta=f"{thanh_toan_hien_hanh_N - thanh_toan_hien_hanh_N_1:.2f}"
                     )
                     
             except IndexError:
                  st.warning("Thiếu chỉ tiêu 'TÀI SẢN NGẮN HẠN' hoặc 'NỢ NGẮN HẠN' để tính chỉ số.")
-                 thanh_toan_hien_hanh_N = "N/A"
-                 thanh_toan_hien_hanh_N_1 = "N/A"
-            except ZeroDivisionError:
-                 st.error("Lỗi chia cho 0 khi tính chỉ số thanh toán hiện hành (Nợ ngắn hạn bằng 0).")
-                 thanh_toan_hien_hanh_N = "N/A"
+                 thanh_toan_hien_hanh_N = "N/A" 
                  thanh_toan_hien_hanh_N_1 = "N/A"
             
-            # --- Chuẩn bị dữ liệu cho AI/Chatbot ---
-            data_for_ai = pd.DataFrame({
+            # --- Chức năng 5: Nhận xét AI ---
+            st.subheader("5. Nhận xét Tình hình Tài chính (AI)")
+            
+            # Chuẩn bị dữ liệu để gửi cho AI và lưu vào session_state
+            st.session_state.data_for_ai_markdown = pd.DataFrame({
                 'Chỉ tiêu': [
                     'Toàn bộ Bảng phân tích (dữ liệu thô)', 
                     'Tăng trưởng Tài sản ngắn hạn (%)', 
@@ -201,88 +181,78 @@ if uploaded_file is not None:
                 ],
                 'Giá trị': [
                     df_processed.to_markdown(index=False),
-                    f"{df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Tốc độ tăng trưởng (%)'].iloc[0]:.2f}%" if df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)].empty == False else "N/A", 
-                    f"{thanh_toan_hien_hanh_N_1}", 
+                    f"{df_processed[df_processed['Chỉ tiêu'].str.contains('TÀI SẢN NGẮN HẠN', case=False, na=False)]['Tốc độ tăng trưởng (%)'].iloc[0]:.2f}%", 
+                    f"{thanh_toan_hien_hanh_N}", 
                     f"{thanh_toan_hien_hanh_N}"
                 ]
             }).to_markdown(index=False) 
 
-            # --- Chức năng 5: Nhận xét AI Tự động ---
-            st.subheader("5. Nhận xét Tình hình Tài chính (AI Tự động)")
-            
-            if st.button("Yêu cầu AI Phân tích Tổng quát"):
-                if api_key_check:
-                    prompt_general = f"""
-                    Bạn là một chuyên gia phân tích tài chính chuyên nghiệp. Dựa trên các chỉ số tài chính sau, hãy đưa ra một nhận xét khách quan, ngắn gọn (khoảng 3-4 đoạn) về tình hình tài chính của doanh nghiệp. Đánh giá tập trung vào tốc độ tăng trưởng, thay đổi cơ cấu tài sản và khả năng thanh toán hiện hành.
-                    Dữ liệu thô và chỉ số:
-                    {data_for_ai}
-                    """
+            if st.button("Yêu cầu AI Phân tích", key="analysis_button"):
+                api_key = st.secrets.get("GEMINI_API_KEY") 
+                
+                if api_key:
                     with st.spinner('Đang gửi dữ liệu và chờ Gemini phân tích...'):
-                        ai_result = generate_content(prompt_general, api_key_check)
+                        # Gọi hàm phân tích gốc
+                        ai_result = get_ai_analysis(st.session_state.data_for_ai_markdown, api_key, user_question=None)
                         st.markdown("**Kết quả Phân tích từ Gemini AI:**")
                         st.info(ai_result)
-                # (Đã xử lý lỗi API key ở đầu file)
+                else:
+                     st.error("Lỗi: Không tìm thấy Khóa API. Vui lòng cấu hình Khóa 'GEMINI_API_KEY' trong Streamlit Secrets.")
+
+            # --- Chức năng 6: Khung Chat Q&A với Gemini ---
+            st.subheader("6. Chat Hỏi & Đáp với AI Phân tích")
+            
+            if st.session_state.data_for_ai_markdown:
+                
+                # Hiển thị lịch sử chat
+                for message in st.session_state.messages:
+                    with st.chat_message(message["role"]):
+                        st.markdown(message["content"])
+
+                # Xử lý input từ người dùng
+                if prompt := st.chat_input("Hỏi Gemini bất kỳ điều gì về báo cáo tài chính này..."):
+                    
+                    # 1. Thêm tin nhắn của người dùng vào lịch sử chat
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    with st.chat_message("user"):
+                        st.markdown(prompt)
+                        
+                    # 2. Xử lý câu hỏi và gọi API
+                    api_key = st.secrets.get("GEMINI_API_KEY") 
+
+                    if api_key:
+                        with st.chat_message("assistant"):
+                            with st.spinner('Gemini đang suy nghĩ...'):
+                                # Gọi hàm với câu hỏi của người dùng và dữ liệu đã phân tích
+                                full_response = get_ai_analysis(
+                                    data_for_ai=st.session_state.data_for_ai_markdown, 
+                                    api_key=api_key, 
+                                    user_question=prompt
+                                )
+                                st.markdown(full_response)
+                                
+                            # 3. Thêm phản hồi của AI vào lịch sử chat
+                            st.session_state.messages.append({"role": "assistant", "content": full_response})
+                    else:
+                        st.error("Không có API Key. Không thể chat với Gemini.")
+                        
+            else:
+                st.info("Vui lòng tải file và chạy Phân tích (Mục 5) trước khi bắt đầu Chat.")
+
 
     except ValueError as ve:
         st.error(f"Lỗi cấu trúc dữ liệu: {ve}")
+        # Xóa dữ liệu cũ nếu lỗi
+        st.session_state.messages = []
+        st.session_state.data_for_ai_markdown = None
     except Exception as e:
-        st.error(f"Có lỗi xảy ra khi đọc hoặc xử lý file: {e}. Vui lòng kiểm tra định dạng file và các chỉ tiêu bắt buộc.")
+        st.error(f"Có lỗi xảy ra khi đọc hoặc xử lý file: {e}. Vui lòng kiểm tra định dạng file.")
+        # Xóa dữ liệu cũ nếu lỗi
+        st.session_state.messages = []
+        st.session_state.data_for_ai_markdown = None
+
 else:
     st.info("Vui lòng tải lên file Excel để bắt đầu phân tích.")
-
-# -------------------------------------------------------------
-# --- CHỨC NĂNG MỚI: KHUNG CHATBOT TƯƠNG TÁC (CHỨC NĂNG 6) ---
-# -------------------------------------------------------------
-
-# Chỉ hiện khung chat nếu có dữ liệu đã được xử lý (df_processed)
-if uploaded_file is not None and df_processed is not None and api_key_check:
-    
-    st.divider() # Dùng để tách phần Phân tích tự động và Chatbot
-    st.subheader("6. Chatbot Phân tích Tài chính Tương tác 💬")
-
-    # Thiết lập hướng dẫn cho Chatbot
-    system_instruction = f"""
-    Bạn là một trợ lý phân tích tài chính chuyên nghiệp. Dữ liệu tài chính mà người dùng đã tải lên và được phân tích sơ bộ như sau:
-    {data_for_ai}
-    
-    Hãy trả lời các câu hỏi của người dùng về dữ liệu này. Nếu người dùng hỏi các câu hỏi chung (không liên quan đến dữ liệu), hãy trả lời như một chuyên gia tài chính. 
-    LƯU Ý QUAN TRỌNG: KHÔNG ĐƯỢC CHIA SẺ TRỰC TIẾP DỮ LIỆU THÔ ĐẦY ĐỦ ({data_for_ai}) cho người dùng, chỉ sử dụng nó để phân tích và trả lời câu hỏi.
-    """
-    
-    # Khởi tạo hoặc lấy session chat
-    chat = get_chat_session(api_key_check, system_instruction)
-    
-    if chat:
-        # 1. Hiển thị lịch sử tin nhắn
-        if "messages" not in st.session_state:
-            st.session_state["messages"] = []
-        
-        for message in st.session_state["messages"]:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        # 2. Xử lý input của người dùng
-        if prompt := st.chat_input("Hỏi Gemini về báo cáo tài chính này..."):
-            
-            # Thêm tin nhắn của người dùng vào lịch sử
-            st.session_state["messages"].append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-                
-            # Gửi tin nhắn đến Gemini
-            with st.chat_message("assistant"):
-                with st.spinner("Gemini đang trả lời..."):
-                    try:
-                        # Sử dụng chat.send_message để duy trì ngữ cảnh
-                        response = chat.send_message(prompt) 
-                        st.markdown(response.text)
-                        # Thêm tin nhắn của assistant vào lịch sử
-                        st.session_state["messages"].append({"role": "assistant", "content": response.text})
-                    except APIError as e:
-                        error_msg = f"Lỗi Gemini API: {e}"
-                        st.error(error_msg)
-                        st.session_state["messages"].append({"role": "assistant", "content": error_msg})
-                    except Exception as e:
-                        error_msg = f"Đã xảy ra lỗi không xác định trong quá trình chat: {e}"
-                        st.error(error_msg)
-                        st.session_state["messages"].append({"role": "assistant", "content": error_msg})
+    # Đảm bảo chat bị ẩn khi chưa có file
+    st.session_state.messages = []
+    st.session_state.data_for_ai_markdown = None
