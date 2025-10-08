@@ -2,8 +2,8 @@
 
 import streamlit as st
 import pandas as pd
-from google import genai
-from google.genai.errors import APIError
+from google.generativeai import GenerativeModel  # Sửa lỗi import: Sử dụng đúng thư viện
+import google.generativeai as genai  # Giữ nguyên nếu đã dùng, nhưng thêm để an toàn
 
 # --- Cấu hình Trang Streamlit ---
 st.set_page_config(
@@ -57,8 +57,8 @@ def process_financial_data(df):
 def get_ai_analysis(data_for_ai, api_key):
     """Gửi dữ liệu phân tích đến Gemini API và nhận nhận xét."""
     try:
-        client = genai.Client(api_key=api_key)
-        model_name = 'gemini-2.5-flash' 
+        genai.configure(api_key=api_key)  # Cấu hình API key
+        model = GenerativeModel('gemini-1.5-flash')  # Sửa model name nếu cần (gemini-1.5-flash là phiên bản hợp lệ)
 
         prompt = f"""
         Bạn là một chuyên gia phân tích tài chính chuyên nghiệp. Dựa trên các chỉ số tài chính sau, hãy đưa ra một nhận xét khách quan, ngắn gọn (khoảng 3-4 đoạn) về tình hình tài chính của doanh nghiệp. Đánh giá tập trung vào tốc độ tăng trưởng, thay đổi cơ cấu tài sản và khả năng thanh toán hiện hành.
@@ -67,18 +67,11 @@ def get_ai_analysis(data_for_ai, api_key):
         {data_for_ai}
         """
 
-        response = client.models.generate_content(
-            model=model_name,
-            contents=prompt
-        )
+        response = model.generate_content(prompt)
         return response.text
 
-    except APIError as e:
-        return f"Lỗi gọi Gemini API: Vui lòng kiểm tra Khóa API hoặc giới hạn sử dụng. Chi tiết lỗi: {e}"
-    except KeyError:
-        return "Lỗi: Không tìm thấy Khóa API 'GEMINI_API_KEY'. Vui lòng kiểm tra cấu hình Secrets trên Streamlit Cloud."
-    except Exception as e:
-        return f"Đã xảy ra lỗi không xác định: {e}"
+    except Exception as e:  # Bắt lỗi chung để đơn giản hóa
+        return f"Đã xảy ra lỗi: {e}"
 
 
 # --- Chức năng 1: Tải File ---
@@ -183,3 +176,62 @@ if uploaded_file is not None:
 
 else:
     st.info("Vui lòng tải lên file Excel để bắt đầu phân tích.")
+
+# --- Thêm Chức năng Mới: Khung Chat với Gemini (Giữ nguyên mã cũ ở trên) ---
+st.subheader("6. Chat với Gemini AI 💬")
+
+# Khởi tạo session state cho lịch sử chat nếu chưa có
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Hàm gọi Gemini cho chat (tái sử dụng logic từ get_ai_analysis nhưng đơn giản hóa cho chat)
+def get_gemini_chat_response(prompt, api_key):
+    try:
+        genai.configure(api_key=api_key)
+        model = GenerativeModel('gemini-1.5-flash')  # Sử dụng cùng model
+
+        # Xây dựng prompt với lịch sử chat để giữ ngữ cảnh
+        full_prompt = "Bạn là một chuyên gia phân tích tài chính. Hãy trả lời câu hỏi của người dùng một cách chuyên nghiệp và ngắn gọn.\n\n"
+        for msg in st.session_state.chat_history:
+            if msg["role"] == "user":
+                full_prompt += f"User: {msg['content']}\n"
+            else:
+                full_prompt += f"AI: {msg['content']}\n"
+        full_prompt += f"User: {prompt}\nAI:"
+
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        return f"Đã xảy ra lỗi: {e}"
+
+# Hiển thị lịch sử chat
+for message in st.session_state.chat_history:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Ô input chat
+user_input = st.chat_input("Hỏi Gemini về phân tích tài chính hoặc bất kỳ điều gì liên quan...")
+
+if user_input:
+    # Thêm tin nhắn user vào lịch sử
+    st.session_state.chat_history.append({"role": "user", "content": user_input})
+    
+    # Hiển thị tin nhắn user ngay lập tức
+    with st.chat_message("user"):
+        st.markdown(user_input)
+    
+    # Lấy API key
+    api_key = st.secrets.get("GEMINI_API_KEY")
+    
+    if api_key:
+        with st.spinner('Đang chờ Gemini trả lời...'):
+            response = get_gemini_chat_response(user_input, api_key)
+            
+            # Thêm phản hồi AI vào lịch sử
+            st.session_state.chat_history.append({"role": "assistant", "content": response})
+            
+            # Hiển thị phản hồi AI
+            with st.chat_message("assistant"):
+                st.markdown(response)
+    else:
+        st.error("Lỗi: Không tìm thấy Khóa API. Vui lòng cấu hình 'GEMINI_API_KEY' trong Streamlit Secrets.")
